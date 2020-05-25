@@ -6,6 +6,7 @@ import os
 
 from slam import SLAM
 
+import tqdm
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='TODO')
@@ -27,8 +28,10 @@ if __name__ == '__main__':
 
     slam = SLAM(width=w, height=h, calibration_matrix=calibration_matrix)
 
-    for name in image_names:
-        print(name)
+    t = tqdm.tqdm(image_names, total=len(image_names))
+
+    for name in t:
+        #print(name)
         #fig = plt.figure()
         img = cv2.imread(path + '/' + name, cv2.IMREAD_GRAYSCALE)
         #plt.imshow(img)
@@ -42,9 +45,9 @@ if __name__ == '__main__':
     ax = fig.add_subplot(111, projection='3d')
     ax.scatter(slam.position[:,0], slam.position[:,1], slam.position[:,2], '-')
     #ax.scatter(slam.map[:,0], slam.map[:,1], slam.map[:,2])
-    ax.set_xlim3d(-20,20)
-    ax.set_ylim3d(-20,20)
-    ax.set_zlim3d(-20,20)
+    #ax.set_xlim3d(-20,20)
+    #ax.set_ylim3d(-20,20)
+    #ax.set_zlim3d(-20,20)
     plt.show()
 
     #print(dir(key_point[0]))
