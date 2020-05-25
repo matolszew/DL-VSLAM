@@ -2,6 +2,10 @@ import numpy as np
 import cv2
 import scipy.spatial.transform as transform
 
+from kalman_filter import EKF
+
+from time import time
+
 class SLAM:
     """First iteration of SLAM class
 
@@ -13,9 +17,10 @@ class SLAM:
         self.height = height
         self.calibration_matrix = calibration_matrix
         self.match_treshold = match_treshold
+        self.state_estimator = EKF()
 
-        self.feature_detector = cv2.ORB_create(nfeatures=500)
-        self.bf = cv2.BFMatcher(cv2.NORM_HAMMING, crossCheck=False)
+        self.feature_detector = cv2.ORB_create(nfeatures=100)
+        self.bf = cv2.BFMatcher(cv2.NORM_HAMMING, crossCheck=True)
 
         self.W = np.array([
             [0, -1, 0],
@@ -33,16 +38,13 @@ class SLAM:
         self.old_T = np.zeros((3,1))
 
         self.rt_ref = np.eye(4)
-
         self.ref_img = None
-        self.cur_img = None
-        self.rotation_hypotheses = np.empty((4,3,3))
-        self.translation_hypotheses = np.empty((4,3,1))
-        self.map = np.zeros((20000, 3))
-        self.map_descriptors = np.zeros((20000, 32), dtype=np.uint8)
+
         self.position = np.zeros((2200, 3))
         self.points_i = 0
         self.pos_i = 0
+
+        self.z_versor = np.array([[0, 0, 1]]).T
 
     def run(self, img):
         """Perform one step
@@ -52,68 +54,115 @@ class SLAM:
         """
         if self.ref_img is None:
             self.ref_img = img
+            self.kp_ref = self.feature_detector.detect(img, None)
+            self.kp_ref, self.kp_ref_des = self.feature_detector.compute(img, self.kp_ref)
             return
 
-        kp_ref_pt, kp_cur_pt, description = self._find_matches(img)
+        #t = time()
+        kp_ref_pt, kp_cur_pt, cur_description = self._find_matches(img)
+        #print(kp_ref_pt.shape, kp_cur_pt.shape, cur_description.shape)
+        #print('Finding matches on imgs: ', time() - t)
 
+        #t = time()
+        if self.state_estimator.points_number > 0:
+            camera_direction = np.matmul(self.state_estimator.rotation_matrix, self.z_versor)
+            #print(camera_direction)
+            #print(self.state_estimator.points_viewing_versor)
+            point_angle = np.array([np.dot(camera_direction[:,0], point_versor) for point_versor in self.state_estimator.points_viewing_versor])
+            #print(point_angle)
+            correct_angle = point_angle > np.cos(np.deg2rad(60))
+            #print(self.state_estimator.points[correct_angle].shape)
+            #print(self.state_estimator.position.shape)
+            camera_point_direction = (self.state_estimator.points[correct_angle]-self.state_estimator.position.T) \
+                / np.expand_dims(np.linalg.norm(self.state_estimator.points[correct_angle]-self.state_estimator.position.T, axis=1), axis=1)
+            #print(camera_point_direction)
+            camera_point_angle = np.array([np.dot(camera_direction[:,0], cp_dir) for cp_dir in camera_point_direction])
+            in_front_of_camera = camera_point_angle > 0
+            correct_angle_indicies = np.argwhere(correct_angle)[:,0]
+            visible_points_indicies = correct_angle_indicies[in_front_of_camera]
+
+            #print(self.state_estimator.points_descriptor[visible_points_indicies])
+            #print(cur_description)
+            matches = self.bf.match(self.state_estimator.points_descriptor[visible_points_indicies], cur_description)
+            matches_bt = [m for m in matches if m.distance < self.match_treshold]
+            old_points_indicies = [visible_points_indicies[m.queryIdx] for m in matches_bt]
+            old_points_descriptors = self.state_estimator.points[old_points_indicies]
+            #print(old_points_indicies)
+            cur_points_old_indicies = [m.trainIdx for m in matches_bt]
+            cur_points_new_indicies = [i for i in range(len(kp_cur_pt)) if i not in cur_points_old_indicies]
+        else:
+            old_points = np.zeros((0,3))
+            old_points_descriptors = np.zeros((0,32))
+            old_points_indicies = np.array([], dtype=np.int)
+            cur_points_new_indicies = range(len(kp_cur_pt))
+            cur_points_old_indicies = []
+        #print('Finding matches in map: ', time() - t)
         # Calculation of homography and fundamental could be parallelized
         #homography_matrix, _ = self._find_homography(kp_ref_pt, kp_cur_pt)
+        points_in_map = []
 
-        fundamental_matrix = cv2.findFundamentalMat(kp_ref_pt, kp_cur_pt, cv2.FM_RANSAC)[0]
-        # TODO: Add checking correctness of the homography and fundamental
+        #t = time()
+        # For now use only triangulation
+        if True:
+            extrinsic_params = self._find_extrinsic_triangulation(kp_ref_pt, kp_cur_pt)
+        else:
+            extrinsic_params = self._find_extrinsic_pnp(self.state_estimator.points[cur_points_old_indicies], kp_cur_pt[cur_indicies_of_old_points])
+        #print('Finding extrinscic: ', time() - t)
+        #print(extrinsic_params)
 
-        rt_change = self._calculate_camera_shift(kp_ref_pt, kp_cur_pt, fundamental_matrix)
-        #print('change: ', rt_change)
-
-        rt_cur = np.matmul(self.rt_ref, rt_change)
-        #print(rt_cur)
-
-        # TODO: actualize camera state
-        #print(self.old_R)
-        #print(R_change)
-
-        self.position[self.pos_i,:] = rt_cur[:3,3]
+        new_pos = extrinsic_params[:3,3]
+        new_rot = extrinsic_params[:3,:3]
+        #print(new_pos)
+        self.position[self.pos_i,:] = new_pos
         self.pos_i += 1
 
-        r = transform.Rotation.from_matrix(rt_cur[:3,:3])
-        quaternion = r.as_quat()
-        print(quaternion)
-
-        #projection_cur = np.concatenate(
-        #    (np.dot(self.calibration_matrix, new_R_matrix),
-        #     np.dot(self.calibration_matrix, new_T)), axis = 1)
-        #projection_cur = np.zeros((3,4))
-        #projection_cur[:3,:3] = np.matmul(self.calibration_matrix, new_R)
-        #projection_cur[:,3] = new_T[:,0]
-
-        points_homo = cv2.triangulatePoints(self.projection_ref[:3,:], np.matmul(self.calibration_matrix, rt_cur[:3,:]), kp_ref_pt.T, kp_cur_pt.T)
+        #print(self.state_estimator.extrinsic_matrix_3x4)
+        #print(extrinsic_params[:3,:])
+        #t = time()
+        points_homo = cv2.triangulatePoints(np.matmul(self.calibration_matrix, self.state_estimator.extrinsic_matrix_3x4), np.matmul(self.calibration_matrix, extrinsic_params[:3,:]), kp_ref_pt.T, kp_cur_pt.T)
         points = cv2.convertPointsFromHomogeneous(points_homo.T)
         points = np.reshape(points, (points.shape[0], points.shape[2]))
+        #print('Triangulation: ', time() - t)
 
-        # TODO: Choose points from map that could be visible
+        new_points = points[cur_points_new_indicies]
+        old_points = points[cur_points_old_indicies]
+        new_desciptions = cur_description[cur_points_new_indicies]
+        #print('new ', new_points.shape)
+        #print('old ', old_points.shape)
 
-        if np.sum(self.map_descriptors) > 0:
-            # TODO: Look for matches only in visible points
-            matches = self.bf.match(description, self.map_descriptors[:self.points_i,:])
-            for m in matches:
-                if m.distance > self.match_treshold:
-                    self.map[self.points_i,:] = points[m.queryIdx]
-                    self.map_descriptors[self.points_i,:] = description[m.queryIdx]
-                    self.points_i += 1
-                else:
-                    # TODO: actualize points in map
-                    pass
-        else:
-            self.map[self.points_i:self.points_i+points.shape[0],:] = points
-            self.map_descriptors[self.points_i:self.points_i+points.shape[0],:] = description
-            self.points_i += points.shape[0]
-        #print('Number of points: ', self.points_i)
-
-        # TODO: actualize camera state based on visible points in map
+        #t = time()
+        self.state_estimator.update(new_pos, new_rot, new_points, new_desciptions, old_points, old_points_descriptors, old_points_indicies)
+        #print('Update Kalman: ', time() - t)
 
         self.ref_img = img
-        self.projection_ref = np.matmul(self.calibration_matrix, rt_cur[:3,:])
-        self.rt_ref = rt_cur
+
+    def _find_extrinsic_triangulation(self, reference_points, current_points):
+        """Find extrinscic matrix using triangulation
+
+        Args:
+
+        """
+        fundamental = cv2.findFundamentalMat(reference_points, current_points, cv2.FM_RANSAC)[0]
+        extrinscic_change = self._calculate_camera_shift(reference_points, current_points, fundamental)
+
+        return np.matmul(self.state_estimator.extrinsic_matrix_4x4, extrinscic_change)
+
+    def _find_extrinsic_pnp(self, object_points, image_points):
+        """Find extrinscic matrix using PnP algorithm
+
+        Args:
+
+        """
+        # NOTE Could be provided initial guess of rvec and tvec
+        #      so maybe get prediction of it from Kalman filter
+        succes, rvec, tvec, inliers = cv2.solvePnPRansac(object_points, image_points, self.calibration_matrix, distCoeffs=None)
+        #print(cv2.solvePnPRansac(object_points, image_points, self.calibration_matrix, distCoeffs=None))
+        rotation_matrix = self.state_estimator.rotation_matrix
+
+        return np.vstack((
+            np.hstack((rotation_matrix, tvec)),
+            np.array([0, 0, 0, 1])
+        ))
 
     def _calculate_camera_shift(self, kp_ref_pt, kp_cur_pt, fundamental_matrix):
         """
@@ -132,9 +181,6 @@ class SLAM:
         i_max = 0
         score_max = 0
         for i in range(4):
-            # projection_matrix = np.concatenate(
-            #     (np.dot(self.calibration_matrix, rotation_hypotheses[i,:]),
-            #      np.dot(self.calibration_matrix, translation_hypotheses[i,:])), axis = 1)
             rt_matrix = np.hstack((rotation_hypotheses[i], translation_hypotheses[i]))
             points_homo = cv2.triangulatePoints(self.base_projection, np.matmul(self.calibration_matrix, rt_matrix), kp_ref_pt.T, kp_cur_pt.T)
             points = cv2.convertPointsFromHomogeneous(points_homo.T)
@@ -143,7 +189,7 @@ class SLAM:
             score = 0
             # Could be vectorize
             for point in points:
-                point2 = np.matmul(self.rotation_hypotheses[i,:], point) + self.translation_hypotheses[i,0,:]
+                point2 = np.matmul(rotation_hypotheses[i,:], point) + translation_hypotheses[i,0,:]
                 if point[2] > 0 and point2[2] > 0:
                     score += 1
             if score > score_max:
@@ -155,22 +201,21 @@ class SLAM:
     def _find_matches(self, cur_img):
         """
         """
-        # TODO: calculate ref only once
-        kp_ref = self.feature_detector.detect(self.ref_img, None)
-        kp_ref, kp_ref_des = self.feature_detector.compute(self.ref_img, kp_ref)
-
         kp_cur = self.feature_detector.detect(cur_img, None)
         kp_cur, kp_cur_des = self.feature_detector.compute(cur_img, kp_cur)
 
-        matches = self.bf.match(kp_ref_des, kp_cur_des)
+        matches = self.bf.match(self.kp_ref_des, kp_cur_des)
         matches_bt = [m for m in matches if m.distance < self.match_treshold]
 
         ref_indicies = [m.queryIdx for m in matches_bt]
         cur_indicies = [m.trainIdx for m in matches_bt]
 
-        kp_ref_pt = np.array([kp_ref[i].pt for i in ref_indicies])
+        kp_ref_pt = np.array([self.kp_ref[i].pt for i in ref_indicies])
         kp_cur_pt = np.array([kp_cur[i].pt for i in cur_indicies])
-        description = np.array([kp_ref_des[i] for i in ref_indicies])
+        description = np.array([kp_cur_des[i] for i in cur_indicies])
+
+        self.kp_ref = kp_cur
+        self.kp_ref_des = kp_cur_des
 
         return kp_ref_pt, kp_cur_pt, description
 
