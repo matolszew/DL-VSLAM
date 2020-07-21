@@ -36,7 +36,7 @@ class EKF:
     """
     #dt=0.012
     def __init__(self, initial_pose, camera_matrix, distortion_coefficients=None,
-                 dt=0.012, acceleration_variance=2e-5, angular_acceleration_variance=2e-5, initial_variance=1e-1):
+                 dt=0.012, acceleration_variance=1e-4, angular_acceleration_variance=1e-4, initial_variance=1e-1):
         self.camera_matrix = camera_matrix
         self.distortion_coefficients = distortion_coefficients
         self.position = np.zeros((3,1))
@@ -112,7 +112,7 @@ class EKF:
         self.points_descriptors_placehorder[r] = descriptors
         self.points_viewing_versor_placehorder[r] = self.camera_direction
         self.points_number += N
-        self.points_variance[r] = 1e-3*np.ones_like(points)
+        self.points_variance[r] = 1e-4*np.ones_like(points)
 
         return list(r)
 
@@ -176,10 +176,10 @@ class EKF:
 
         #print(state[:13])
         #print(points_observation[:10])
-        #print(self.rotation_vector)
-        #print(cv2.Rodrigues(self.rotation_matrix))
+        quat_conj = np.conjugate(rotation_prediction)
+        inv_rotation = quaternion.as_rotation_matrix(quat_conj)
         observation_prediction, projection_jacobian = cv2.projectPoints(self.points[points_indicies],
-                                                   cv2.Rodrigues(self.rotation_matrix)[0], self.position,
+                                                   cv2.Rodrigues(inv_rotation)[0], state_prediction[:3],
                                                    self.camera_matrix, distCoeffs=None)
         #print(observation_prediction[:10])
 
@@ -198,18 +198,45 @@ class EKF:
             #jacobian_proj_cam[i:i+2,:] = jacobian_proj_focal[i:i+2]
         jacobian_q2rvec = self._jacobian_quat2rvec()
 
-        quat_conj = np.conjugate(rotation_prediction)
-        inv_rotation = quaternion.as_rotation_matrix(quat_conj)
+
+        fx = self.camera_matrix[0,0]
+        fy = self.camera_matrix[1,1]
+        cx = self.camera_matrix[0,2]
+        cy = self.camera_matrix[1,2]
+        #r = quaternion.as_rotation_matrix(rotation_prediction)
+        r = inv_rotation
+        dh_dp = np.array([
+            [fx*r[0,0]+cx*r[2,0], fx*r[0,1]+cx*r[2,1], fx*r[0,2]+cx*r[2,2]],
+            [fy*r[1,0]+cy*r[2,0], fy*r[1,1]+cy*r[2,1], fy*r[1,2]+cy*r[2,2]]
+        ])
 
         observation_jacobian = np.zeros((points_n*2, state_n))
-        for i in range(0, points_n*2, 2):
-            observation_jacobian[i:i+2,:3] = np.matmul(jacobian_proj_cam[i:i+2], jacobian_proj_position[i:i+2])
-            observation_jacobian[i:i+2,3:7] = np.matmul(np.matmul(jacobian_proj_cam[i:i+2], jacobian_proj_rvec[i:i+2]),
+        for i in range(0, points_n):
+            j = i*2
+            observation_jacobian[j:j+2,:3] = np.matmul(jacobian_proj_cam[j:j+2], jacobian_proj_position[j:j+2])
+            observation_jacobian[j:j+2,3:7] = np.matmul(np.matmul(jacobian_proj_cam[j:j+2], jacobian_proj_rvec[j:j+2]),
                                                         jacobian_q2rvec)
             # NOTE: Checi if below is correct
             # observation_jacobian[i:i+2,i+13:i+16] = np.matmul(jacobian_proj_cam[i:i+2], np.ones((2,3)))
             #observation_jacobian[i:i+2,i+13:i+16] = inv_rotation[:2,:]
-            observation_jacobian[i:i+2,i+13:i+16] = np.matmul(jacobian_proj_cam[i:i+2], inv_rotation[:2,:])
+            #observation_jacobian[i:i+2,i+13:i+16] = np.matmul(jacobian_proj_cam[i:i+2], inv_rotation[:2,:])
+            X = self.points[points_indicies[i]][0]
+            Y = self.points[points_indicies[i]][1]
+            Z = self.points[points_indicies[i]][2]
+            Lx = (fx*r[0,0]+cx*r[2,0])*X + (fx*r[0,1]+cx*r[2,1])*Y + (fx*r[0,2]+cx*r[2,2])*Z + state_prediction[0]*fx + state_prediction[2]*cx
+            Ly = (fy*r[1,0]+cy*r[2,0])*X + (fy*r[1,1]+cy*r[2,1])*Y + (fy*r[1,2]+cy*r[2,2])*Z + state_prediction[1]*fy + state_prediction[2]*cy
+            M = r[2,0]*X + r[2,1]*Y + r[2,2]*Z + state_prediction[2]
+            dx_dX = ((fx*r[0,0]+cx*r[2,0])*M - Lx*r[2,0]) / M**2
+            dx_dY = ((fx*r[0,1]+cx*r[2,1])*M - Lx*r[2,1]) / M**2
+            dx_dZ = ((fx*r[0,2]+cx*r[2,2])*M - Lx*r[2,2]) / M**2
+            dy_dX = ((fy*r[1,0]+cy*r[2,0])*M - Ly*r[2,0]) / M**2
+            dy_dY = ((fy*r[1,1]+cy*r[2,1])*M - Ly*r[2,1]) / M**2
+            dy_dZ = ((fy*r[1,2]+cy*r[2,2])*M - Ly*r[2,2]) / M**2
+            observation_jacobian[j:j+2,j+13:j+16] = np.array([
+                [dx_dX, dx_dY, dx_dZ],
+                [dy_dX, dy_dY, dy_dZ]
+            ])[:,:,0]
+
 
         # print(jacobian_proj_cam)
         #print(observation_jacobian[:20,:20])
