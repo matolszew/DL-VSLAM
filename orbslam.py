@@ -110,9 +110,9 @@ class ORBSLAM:
             j = i*7
             keyframe.update_rotation_from_quat(res.x[j:j+4])
             keyframe.update_position(res.x[j+4:j+7])
-        #print(self.map.points3d)
+        print(self.map.points3d)
         self.map.update_points(res.x[-3*len(self.map):].reshape((len(self.map),3)))
-        #print(self.map.points3d)
+        print(self.map.points3d)
         input("Press Enter to continue...")
 
     def _ba_projection(self, x):
@@ -124,12 +124,12 @@ class ORBSLAM:
         Np = 2*Nm*Nf
         out = np.zeros((Np))
         for i, frame in enumerate(self.keyframes):
-            p_img = frame.points_on_img
-            p, j = cv2.projectPoints(self.map.points3d, frame.camera_rotation_vector, frame.camera_position, self.camera_matrix, None)
-            out[i*2:Np:2*Nf] = p_img[:,0] - p[:,0,0]
-            out[1+i*2:Np:2*Nf] = p_img[:,1] - p[:,0,1]
+            p_img, map_indicies = frame.points_on_img
+            p, j = cv2.projectPoints(self.map.points3d[map_indicies], frame.camera_rotation_vector, frame.camera_position, self.camera_matrix, None)
 
-        # TODO: return difference between measured and calulated projection
+            for p_i, m_i in enumerate(map_indicies):
+                out[i*2+2*m_i : i*2+2*m_i+2] = p_img[p_i,:] - p[p_i,0,:]
+
         return out
 
     def _position_from_fundamental(self, F, points_ref, points_cur):
