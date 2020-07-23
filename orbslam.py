@@ -61,8 +61,8 @@ class ORBSLAM:
         matches = self.matcher.match(self.keyframes[0].descriptors, self.keyframes[-1].descriptors)
         matches = [m for m in matches if m.distance < self.match_treshold]
 
-        ref_indicies = [m.queryIdx for m in matches]
-        cur_indicies = [m.trainIdx for m in matches]
+        ref_indicies = np.array([m.queryIdx for m in matches])
+        cur_indicies = np.array([m.trainIdx for m in matches])
 
         points_ref = self.keyframes[0].points2d[ref_indicies]
         points_cur = self.keyframes[-1].points2d[cur_indicies]
@@ -78,9 +78,13 @@ class ORBSLAM:
             points_ref = points_ref[F_inliers[:,0]]
             points_cur = points_cur[F_inliers[:,0]]
             description = description[F_inliers[:,0]]
+            ref_indicies = ref_indicies[F_inliers[:,0]]
+            cur_indicies = cur_indicies[F_inliers[:,0]]
             points3d, rt_matrix, inliers = self._position_from_fundamental(F, points_ref, points_cur)
+            m_indices = self.map.add_points(points3d, description[inliers], self.matcher, self.match_treshold)
+            self.keyframes[0].update_indicies(m_indices, ref_indicies[inliers])
+            self.keyframes[-1].update_indicies(m_indices, cur_indicies[inliers])
             self.keyframes[-1].update_position_and_rotation(rt_matrix)
-            self.map.add_points(points3d, description[inliers])
         else:
             # TODO: add calculation position from homography
             pass
@@ -91,18 +95,24 @@ class ORBSLAM:
         """
         """
         n = 7*len(self.keyframes) + 3*len(self.map)
-        x = np.empty((n))
+        x0 = np.empty((n))
         for i, keyframe in enumerate(self.keyframes):
             j = i*7
-            x[j:j+4] = keyframe.camera_quaternion
-            x[j+4:j+7] = keyframe.camera_position[:,0]
-        x[-3*len(self.map):] = self.map.points3d.flatten()
+            x0[j:j+4] = keyframe.camera_quaternion
+            x0[j+4:j+7] = keyframe.camera_position[:,0]
+        x0[-3*len(self.map):] = self.map.points3d.flatten()
 
-        res = least_squares(self._ba_projection, x,
+        res = least_squares(self._ba_projection, x0,
                             #jac=projection_jacobian, tr_solver='lsmr',
                             #jac_sparsity=projection_sparsity,
                             verbose=0)
-        print(res)
+        for i, keyframe in enumerate(self.keyframes):
+            j = i*7
+            keyframe.update_rotation_from_quat(res.x[j:j+4])
+            keyframe.update_position(res.x[j+4:j+7])
+        #print(self.map.points3d)
+        self.map.update_points(res.x[-3*len(self.map):].reshape((len(self.map),3)))
+        #print(self.map.points3d)
         input("Press Enter to continue...")
 
     def _ba_projection(self, x):
@@ -112,11 +122,12 @@ class ORBSLAM:
         Nf = len(self.keyframes)
         Nm = len(self.map)
         Np = 2*Nm*Nf
-        out = np.empty((Np))
+        out = np.zeros((Np))
         for i, frame in enumerate(self.keyframes):
+            p_img = frame.points_on_img
             p, j = cv2.projectPoints(self.map.points3d, frame.camera_rotation_vector, frame.camera_position, self.camera_matrix, None)
-            out[i*2:Np:2*Nf] = p[:,0,0]
-            out[1+i*2:Np:2*Nf] = p[:,0,1]
+            out[i*2:Np:2*Nf] = p_img[:,0] - p[:,0,0]
+            out[1+i*2:Np:2*Nf] = p_img[:,1] - p[:,0,1]
 
         # TODO: return difference between measured and calulated projection
         return out

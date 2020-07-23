@@ -10,6 +10,7 @@ class KeyFrame:
         self.descriptors = descriptors
         self.camera_position = None
         self.camera_rotation = None
+        self.map_indicies = -1 * np.ones((len(self.keypoints)), dtype=np.int)
 
     @property
     def camera_quaternion(self):
@@ -23,6 +24,11 @@ class KeyFrame:
     @property
     def camera_rotation_vector(self):
         return self.camera_rotation.as_rotvec()
+
+    @property
+    def points_on_img(self):
+        in_map = self.map_indicies >= 0
+        return self.points2d[self.map_indicies[in_map]]
 
     def update_position_and_rotation(self, rt):
         """
@@ -41,4 +47,9 @@ class KeyFrame:
     def update_position(self, t):
         """
         """
-        self.camera_position = t
+        self.camera_position = t.reshape((3,1))
+
+    def update_indicies(self, map_indicies, frame_indicies):
+        """
+        """
+        self.map_indicies[frame_indicies] = map_indicies
