@@ -45,6 +45,11 @@ class KeyFrame:
         """
         self.camera_rotation = Rotation.from_quat(q)
 
+    def update_rotation_from_rotation_vector(self, rvec):
+        """
+        """
+        self.camera_rotation = Rotation.from_rotvec(rvec)
+
     def update_position(self, t):
         """
         """
