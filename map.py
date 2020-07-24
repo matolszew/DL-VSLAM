@@ -6,7 +6,7 @@ class Map:
     def __init__(self, max_points=10000):
         self.N_points = 0
         self.max_points = max_points
-        self.points_placehorder = np.empty((max_points, 3))
+        self.points_placehorder = np.zeros((max_points, 3))
         self.points_descriptors_placehorder = np.empty((max_points, 32), dtype=np.uint8)
         self.points_viewing_versor_placehorder = np.zeros((max_points, 3))
 
@@ -35,11 +35,14 @@ class Map:
 
         # add new points to map
         n = new_points.shape[0]
-        new_indicies = np.array(range(self.N_points, self.N_points+n))
-        self.points_placehorder[new_indicies,:] = new_points
-        self.points_descriptors_placehorder[new_indicies,:] = descriptors[points_not_in_map]
-        # add saving viewing versor
-        self.N_points += n
+        if n > 0:
+            new_indicies = np.array(range(self.N_points, self.N_points+n))
+            self.points_placehorder[new_indicies,:] = new_points
+            self.points_descriptors_placehorder[new_indicies,:] = descriptors[points_not_in_map]
+            # add saving viewing versor
+            self.N_points += n
+        else:
+            new_indicies = []
 
         indicies = np.empty((points.shape[0]), dtype=np.int)
         indicies[points_in_map] = old_indicies
