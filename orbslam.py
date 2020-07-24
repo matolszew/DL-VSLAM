@@ -1,6 +1,7 @@
 import numpy as np
 import cv2
 from scipy.optimize import least_squares
+from scipy.spatial.transform import Rotation
 
 from map import Map
 from key_frame import KeyFrame
@@ -17,7 +18,7 @@ class ORBSLAM:
     def __init__(self, camera_matrix, feature_detector='orb', initial_pose=None):
         self.camera_matrix = camera_matrix
         if feature_detector=='orb':
-            self.feature_detector = cv2.ORB_create(nfeatures=100)
+            self.feature_detector = cv2.ORB_create(nfeatures=500)
         else:
             raise ValueError('Not known feature detector')
         self.matcher = cv2.BFMatcher(cv2.NORM_HAMMING, crossCheck=True)
@@ -45,6 +46,10 @@ class ORBSLAM:
         keypoints = self.feature_detector.detect(img, None)
         keypoints, descriptors = self.feature_detector.compute(img, keypoints)
         self.keyframes.append(KeyFrame(keypoints, descriptors))
+
+        img2 = cv2.drawKeypoints(img, keypoints, None, color=(0,255,0), flags=0)
+        cv2.imshow('frame',img2)
+        cv2.waitKey(1)
 
         if len(self.keyframes) == 1:
             # TODO: add possibility to initialize camera rotation and position
@@ -94,38 +99,96 @@ class ORBSLAM:
     def bundle_adjustment(self):
         """
         """
-        n = 7*len(self.keyframes) + 3*len(self.map)
+        n = 6*len(self.keyframes) + 3*len(self.map)
         x0 = np.empty((n))
         for i, keyframe in enumerate(self.keyframes):
-            j = i*7
-            x0[j:j+4] = keyframe.camera_quaternion
-            x0[j+4:j+7] = keyframe.camera_position[:,0]
+            j = i*6
+            x0[j:j+3] = keyframe.camera_rotation_vector
+            x0[j+3:j+6] = keyframe.camera_position[:,0]
         x0[-3*len(self.map):] = self.map.points3d.flatten()
 
         res = least_squares(self._ba_projection, x0,
-                            #jac=projection_jacobian, tr_solver='lsmr',
-                            #jac_sparsity=projection_sparsity,
+                            jac=self._calculate_jacobian, tr_solver='lsmr',
+                            jac_sparsity=self._jacobian_sparsity(),
                             verbose=0)
         for i, keyframe in enumerate(self.keyframes):
-            j = i*7
-            keyframe.update_rotation_from_quat(res.x[j:j+4])
-            keyframe.update_position(res.x[j+4:j+7])
-        print(self.map.points3d)
+            j = i*6
+            keyframe.update_rotation_from_rotation_vector(res.x[j:j+3])
+            keyframe.update_position(res.x[j+3:j+6])
+            #print(res.x[j+3:j+6])
         self.map.update_points(res.x[-3*len(self.map):].reshape((len(self.map),3)))
-        print(self.map.points3d)
         input("Press Enter to continue...")
+
+    def _jacobian_sparsity(self):
+        """
+        """
+        Nf = len(self.keyframes)
+        Nm = len(self.map)
+
+        sparsity = np.zeros((2*Nm*Nf, 6*Nf+Nm), dtype=np.bool)
+        for i, frame in enumerate(self.keyframes):
+            p_img, map_indicies = frame.points_on_img
+            for p_i, m_i in enumerate(map_indicies):
+                # camera jacobian
+                sparsity[m_i*Nf+i:m_i*Nf+i+1, i:i+6] = True
+                # point jacobians
+                sparsity[m_i*Nf+i, 6+m_i*3:9+m_i*3] = True
+                sparsity[m_i*Nf+i+1, 6+m_i*3:9+m_i*3] = True
+
+        return sparsity
+
+    def _calculate_jacobian(self, x):
+        """
+        """
+        Nf = len(self.keyframes)
+        Nm = len(self.map)
+
+        points3d = x[-3*Nm:].reshape((Nm,3))
+
+        jacobian = np.zeros((2*Nm*Nf, 6*Nf+3*Nm))
+        for i, frame in enumerate(self.keyframes):
+            p_img, map_indicies = frame.points_on_img
+            j = i*6
+            rvec = x[j:j+3]
+            pos = x[j+3:j+6]
+
+            p, j = cv2.projectPoints(points3d[map_indicies], rvec, pos, self.camera_matrix, None)
+
+            r = Rotation.from_rotvec(rvec).as_matrix()
+            fx = self.camera_matrix[0,0]
+            fy = self.camera_matrix[1,1]
+            px = self.camera_matrix[0,2]
+            py = self.camera_matrix[1,2]
+            du_dp = np.array([fx*r[0,0]+px*r[2,0], fx*r[0,1]+px*r[2,1], fx*r[0,2]+px*r[2,2]])
+            dv_dp = np.array([fy*r[1,0]+py*r[2,0], fy*r[1,1]+py*r[2,1], fy*r[1,2]+py*r[2,2]])
+            dw_dp = r[2,:]
+
+            for p_i, m_i in enumerate(map_indicies):
+                # camera jacobian
+                jacobian[m_i*Nf+i:m_i*Nf+i+1, i:i+6] = j[p_i:p_i+1,:6]
+                # point jacobians
+                jacobian[m_i*Nf+i, 6+m_i*3:9+m_i*3] = du_dp - p[p_i,0,0]*dw_dp
+                jacobian[m_i*Nf+i+1, 6+m_i*3:9+m_i*3] = dv_dp - p[p_i,0,1]*dw_dp
+
+        return jacobian
 
     def _ba_projection(self, x):
         """
         """
-        # NOTE: For now will work only when map points are visible in all keyframes
         Nf = len(self.keyframes)
         Nm = len(self.map)
         Np = 2*Nm*Nf
+
+        points3d = x[-3*Nm:].reshape((Nm,3))
+
         out = np.zeros((Np))
         for i, frame in enumerate(self.keyframes):
             p_img, map_indicies = frame.points_on_img
-            p, j = cv2.projectPoints(self.map.points3d[map_indicies], frame.camera_rotation_vector, frame.camera_position, self.camera_matrix, None)
+            j = i*6
+            rvec = x[j:j+3]
+            pos = x[j+3:j+6]
+
+            p, jacobian = cv2.projectPoints(points3d[map_indicies], rvec, pos, self.camera_matrix, None)
 
             for p_i, m_i in enumerate(map_indicies):
                 out[i*2+2*m_i : i*2+2*m_i+2] = p_img[p_i,:] - p[p_i,0,:]
