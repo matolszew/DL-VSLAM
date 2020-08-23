@@ -26,10 +26,22 @@ class KeyFrame:
         return self.camera_rotation.as_rotvec()
 
     @property
+    def camera_extrinsic(self):
+        proj = np.eye(4)
+        proj[:3,:3] = self.camera_rotaion_matrix
+        proj[:3,3] = self.camera_position
+        return proj
+
+    @property
     def points_on_img(self):
         in_map = self.map_indicies >= 0
         indicies = self.map_indicies[in_map]
         return self.points2d[indicies], indicies
+
+    @property
+    def descriptors_in_map(self):
+        in_map = self.map_indicies >= 0
+        return self.descriptors[in_map]
 
     def update_position_and_rotation(self, rt):
         """
