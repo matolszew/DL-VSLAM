@@ -4,13 +4,15 @@ from scipy.spatial.transform import Rotation
 class KeyFrame:
     """
     """
-    def __init__(self, keypoints, descriptors, camera_position=None, camera_rotation=None):
+    def __init__(self, keypoints, descriptors, camera_intrinsic,
+                 camera_position=None, camera_rotation=None,):
         self.keypoints = keypoints
         self.points2d = np.array([kp.pt for kp in self.keypoints])
         self.descriptors = descriptors
+        self.camera_intrinsic = camera_intrinsic
         self.camera_position = None
         self.camera_rotation = None
-        self.map_indicies = -1 * np.ones((len(self.keypoints)), dtype=np.int)
+        self.map_indices = -1 * np.ones((len(self.keypoints)), dtype=np.int)
 
     @property
     def camera_quaternion(self):
@@ -29,19 +31,49 @@ class KeyFrame:
     def camera_extrinsic(self):
         proj = np.eye(4)
         proj[:3,:3] = self.camera_rotaion_matrix
-        proj[:3,3] = self.camera_position
+        proj[:3,3] = self.camera_position[:,0]
         return proj
 
     @property
-    def points_on_img(self):
-        in_map = self.map_indicies >= 0
-        indicies = self.map_indicies[in_map]
-        return self.points2d[indicies], indicies
+    def camera_direction(self):
+        r = self.camera_rotaion_matrix
+        return r[:,2]
+
+    @property
+    def points_in_map(self):
+        in_map = self.map_indices >= 0
+        indices = self.map_indices[in_map]
+        return self.points2d[in_map], indices
 
     @property
     def descriptors_in_map(self):
-        in_map = self.map_indicies >= 0
+        in_map = self.map_indices >= 0
         return self.descriptors[in_map]
+
+    @property
+    def unmatched_descriptors(self):
+        indices = np.argwhere(self.map_indices == -1)[:,0]
+        return self.descriptors[indices], indices
+
+    @property
+    def indices_in_map(self):
+        in_map = self.map_indices >= 0
+        return self.map_indices[in_map]
+
+    @property
+    def camera_projection(self):
+        return np.matmul(self.camera_intrinsic, self.camera_extrinsic[:3,:4])
+
+    def chosen_points_in_map(self, indices):
+        """
+        """
+        in_map = self.map_indices >= 0
+        for i, map_i in enumerate(self.map_indices):
+            if in_map[i]:
+                if map_i not in indices:
+                    in_map[i] = False
+
+        return self.points2d[in_map], self.map_indices[in_map]
 
     def update_position_and_rotation(self, rt):
         """
@@ -50,7 +82,7 @@ class KeyFrame:
             rt (np.array): Rotation-translation matrix
         """
         self.camera_rotation = Rotation.from_matrix(rt[:3,:3])
-        self.camera_position = rt[:,3].reshape((3,1))
+        self.camera_position = rt[:3,3].reshape((3,1))
 
     def update_rotation_from_quat(self, q):
         """
@@ -67,7 +99,7 @@ class KeyFrame:
         """
         self.camera_position = t.reshape((3,1))
 
-    def update_indicies(self, map_indicies, frame_indicies):
+    def update_indices(self, map_indices, frame_indices):
         """
         """
-        self.map_indicies[frame_indicies] = map_indicies
+        self.map_indices[frame_indices] = map_indices
