@@ -21,6 +21,10 @@ class Map:
     def points_descriptors(self):
         return self.points_descriptors_placehorder[:self.N_points]
 
+    @property
+    def points_viewing_versor(self):
+        return self.points_viewing_versor_placehorder[:self.N_points]
+
     def add_points(self, points, descriptors, matcher, match_treshold):
         """
         """
@@ -50,8 +54,24 @@ class Map:
 
         return indicies
 
+    def add_new_points(self, points, descriptors):
+        n = points.shape[0]
+        new_indicies = np.array(range(self.N_points, self.N_points+n))
+        self.points_placehorder[new_indicies,:] = points
+        self.points_descriptors_placehorder[new_indicies,:] = descriptors
+        # add saving viewing versor
+        self.N_points += n
+
+        return new_indicies
+
     def update_points(self, p):
         """
         """
         # NOTE: for now work only when updating all points
         self.points_placehorder[:self.N_points,:] = p
+
+    def update_local_points(self, p, indices):
+        """
+        """
+        # NOTE: for now work only when updating all points
+        self.points_placehorder[indices,:] = p
