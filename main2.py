@@ -16,8 +16,8 @@ def animate(i, slam, path):
     img = cv2.undistort(img, camera_matrix, distortion_coefficients)
     slam.update(img)
 
-    t = slam.keyframes[-1].camera_position
-    r = slam.keyframes[-1].camera_rotaion_matrix
+    t = slam._last_key_frame.camera_position
+    r = slam._last_key_frame.camera_rotaion_matrix
     vx = r[:,0]
     vy = r[:,1]
     vz = r[:,2]
@@ -36,9 +36,11 @@ def animate(i, slam, path):
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='TODO')
     parser.add_argument('path', metavar='path', type=str, help='data')
+    parser.add_argument('feature_detector', metavar='feature_detector', type=str)
     args = parser.parse_args()
 
     path = args.path
+    feature_detector = args.feature_detector
     image_names = sorted(os.listdir(path))
 
     camera_matrix = np.array([
@@ -48,7 +50,7 @@ if __name__ == '__main__':
     ])
     distortion_coefficients = np.array([-0.28340811, 0.07395907, 0.00019359, 1.76187114e-05])
 
-    slam = ORBSLAM(camera_matrix)
+    slam = ORBSLAM(camera_matrix, (480,752), feature_detector=feature_detector)
 
     img = cv2.imread(path + '/' + image_names[0], cv2.IMREAD_GRAYSCALE)
     img = cv2.undistort(img, camera_matrix, distortion_coefficients)
@@ -57,7 +59,6 @@ if __name__ == '__main__':
     img = cv2.imread(path + '/' + image_names[2], cv2.IMREAD_GRAYSCALE)
     img = cv2.undistort(img, camera_matrix, distortion_coefficients)
     slam.update(img)
-
     fig = plt.figure()
     ax = plt.axes(projection="3d")
     ani = animation.FuncAnimation(fig, animate, frames=image_names[2:-1:2], interval=1, fargs=(slam, path))
